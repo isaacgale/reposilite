@@ -42,6 +42,7 @@ dependencies {
     val kotlin = "2.0.0"
     implementation("org.jetbrains.kotlin:kotlin-reflect:$kotlin")
     implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8:$kotlin")
+    implementation("org.jetbrains.kotlinx:kotlinx-html-jvm:0.11.0")
 
     val javalin = "6.1.6"
     api("io.javalin:javalin:$javalin")

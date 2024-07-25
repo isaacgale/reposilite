@@ -23,6 +23,9 @@ import com.reposilite.maven.api.DeployRequest
 import com.reposilite.maven.api.LookupRequest
 import com.reposilite.shared.extensions.resultAttachment
 import com.reposilite.shared.extensions.uri
+import com.reposilite.storage.api.DirectoryInfo
+import com.reposilite.storage.api.DocumentInfo
+import com.reposilite.storage.api.FileType
 import com.reposilite.storage.api.Location
 import com.reposilite.token.AccessTokenIdentifier
 import com.reposilite.web.api.ReposiliteRoute
@@ -31,6 +34,7 @@ import io.javalin.community.routing.Route.GET
 import io.javalin.community.routing.Route.HEAD
 import io.javalin.community.routing.Route.POST
 import io.javalin.community.routing.Route.PUT
+import io.javalin.http.ContentType
 import io.javalin.http.Context
 import io.javalin.openapi.ContentType.FORM_DATA_MULTIPART
 import io.javalin.openapi.HttpMethod
@@ -38,6 +42,9 @@ import io.javalin.openapi.OpenApi
 import io.javalin.openapi.OpenApiContent
 import io.javalin.openapi.OpenApiParam
 import io.javalin.openapi.OpenApiResponse
+import java.io.InputStream
+import kotlinx.html.*
+import kotlinx.html.stream.createHTML
 
 const val X_GENERATE_CHECKSUMS = "X-Generate-Checksums"
 
@@ -72,22 +79,66 @@ internal class MavenEndpoints(
 
     fun findFile(ctx: Context, identifier: AccessTokenIdentifier?, repository: String, gav: Location) {
         LookupRequest(identifier, repository, gav)
-            .let { request -> mavenFacade.findFile(request) }
-            .peek {
-                ctx.resultAttachment(
-                    name = it.document.name,
-                    contentType = it.document.contentType,
-                    contentLength = it.document.contentLength,
-                    lastTimeModified = it.document.lastModifiedTime,
-                    compressionStrategy = compressionStrategy,
-                    cache = it.cachable,
-                    data = it.content
-                )
+            .let { request -> mavenFacade.findDetails(request).let { f ->
+               when {
+                   f.isErr -> {
+                       ctx.status(f.error.status).html(frontendFacade.createNotFoundPage(ctx.uri(), f.error.message))
+                   }
+                   f.get() is DocumentInfo -> {
+                       mavenFacade.findFile(request)
+                           .peek {
+                               ctx.resultAttachment(
+                                   name = it.document.name,
+                                   contentType = it.document.contentType,
+                                   contentLength = it.document.contentLength,
+                                   lastTimeModified = it.document.lastModifiedTime,
+                                   compressionStrategy = compressionStrategy,
+                                   cache = it.cachable,
+                                   data = it.content
+                               )
+                           }
+                           .onError {
+                               ctx.status(it.status).html(frontendFacade.createNotFoundPage(ctx.uri(), it.message))
+                               mavenFacade.logger.debug("FIND | Could not find file due to $it")
+                           }
+                   }
+                   f.get() is DirectoryInfo -> {
+                       ctx.resultAttachment(
+                           name = "index.html",
+                           contentType = ContentType.TEXT_HTML,
+                           contentLength = -1,
+                           lastTimeModified = null,
+                           compressionStrategy = compressionStrategy,
+                           cache = false,
+                           data = createIndexFile(ctx.fullUrl(), f.get() as DirectoryInfo)
+                       )
+                   }
+                   else -> {
+                       ctx.status(404).html(frontendFacade.createNotFoundPage(ctx.uri(), "bad news"))
+                   }
+               }}}
+    }
+
+    private fun createIndexFile(uri: String, dir: DirectoryInfo): InputStream {
+        return createHTML().html {
+            head {
+                title { +"Index of $uri" }
             }
-            .onError {
-                ctx.status(it.status).html(frontendFacade.createNotFoundPage(ctx.uri(), it.message))
-                mavenFacade.logger.debug("FIND | Could not find file due to $it")
+            body {
+                h1 { + "Index of $uri"}
+                ul {
+                    for(child in dir.files) {
+                        when {
+                            child.type == FileType.DIRECTORY -> {
+                                li {
+                                    a("${uri}${child.name}/") { +"${child.name}/" }
+                                }
+                            }
+                        }
+                    }
+                }
             }
+        }.toString().trim().byteInputStream()
     }
 
     @OpenApi(
